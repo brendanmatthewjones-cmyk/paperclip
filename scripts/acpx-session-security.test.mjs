@@ -229,6 +229,10 @@ test("ACPX stale-lock recovery leaves a live sweep's claim untouched", async (t)
 });
 
 test("ACPX claim recovery advances past preserved conflicts", async (t) => {
+  if (process.platform !== "linux") {
+    t.skip("Linux process-start identity fixture");
+    return;
+  }
   const stateDir = await mkdtemp(join(tmpdir(), "acpx-claim-cursor-"));
   t.after(() => rm(stateDir, { recursive: true, force: true }));
   const setup = createFileSessionStore({ stateDir });
