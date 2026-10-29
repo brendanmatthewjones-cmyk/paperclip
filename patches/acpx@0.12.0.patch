@@ -280,7 +280,7 @@ index ccdbe5b032521518022223733049b8b38793473b..57e93d4abcb7aaddc3a020c8805d47c7
  //# sourceMappingURL=runtime.d.ts.map
 \ No newline at end of file
 diff --git a/dist/runtime.js b/dist/runtime.js
-index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..30736e9cf25b40eb42496c44fda40a42b3dbc500 100644
+index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..3fcc70b41d5664d93921d0b740d2b6da00158b29 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -2,6 +2,8 @@ import { A as REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, At as listBuiltInAgents, D
@@ -414,7 +414,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..30736e9cf25b40eb42496c44fda40a42
  		}
  		let parsed;
  		try {
-@@ -1375,21 +1460,141 @@ var FileSessionStore = class {
+@@ -1375,21 +1460,148 @@ var FileSessionStore = class {
  		} catch {
  			return;
  		}
@@ -536,18 +536,25 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..30736e9cf25b40eb42496c44fda40a42
 +			if (candidate.lastUsedAt > now - this.retention.maxAgeMs && excess <= 0) continue;
 +			const claim = `${candidate.file}.${process.pid}.${randomUUID()}.pruning`;
 +			try { await fs.rename(candidate.file, claim); } catch (error) { if (error.code === "ENOENT") continue; throw error; }
++			let keepClaim = false;
 +			try {
 +				const claimedPayload = await fs.readFile(claim, "utf8");
 +				let claimedRecord;
 +				try { claimedRecord = JSON.parse(claimedPayload); } catch {}
 +				if (claimedPayload !== candidate.payload || claimedRecord?.closed !== true || Date.parse(claimedRecord.last_used_at) > now - this.retention.maxAgeMs && excess <= 0) {
-+					try { await fs.link(claim, candidate.file); } catch (error) { if (error.code !== "EEXIST") throw error; }
++					try { await fs.link(claim, candidate.file); }
++					catch (error) {
++						if (error.code !== "EEXIST") throw error;
++						// Another save owns the normal path. Never discard a possibly
++						// active claim just because that path is occupied.
++						keepClaim = true;
++					}
 +					continue;
 +				}
 +				deleted++;
 +				excess--;
 +			} finally {
-+				await fs.unlink(claim);
++				if (!keepClaim) await fs.unlink(claim);
 +			}
 +		}
 +		return { scanned: selected.length, deleted };
@@ -559,7 +566,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..30736e9cf25b40eb42496c44fda40a42
  }
  //#endregion
  //#region src/runtime/public/handle-state.ts
-@@ -1586,6 +1791,7 @@ var AcpxRuntime = class {
+@@ -1586,6 +1798,7 @@ var AcpxRuntime = class {
  		const turnPromise = this.getManager().then((manager) => manager.startTurn({
  			handle,
  			text: input.text,
@@ -567,7 +574,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..30736e9cf25b40eb42496c44fda40a42
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
-@@ -1614,6 +1820,7 @@ var AcpxRuntime = class {
+@@ -1614,6 +1827,7 @@ var AcpxRuntime = class {
  		yield* (await this.getManager()).runTurn({
  			handle,
  			text: input.text,

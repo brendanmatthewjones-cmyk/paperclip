@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import fs, { mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -213,4 +213,29 @@ test("ACPX missing session returns undefined before any save", async (t) => {
   const stateDir = await mkdtemp(join(tmpdir(), "acpx-empty-load-"));
   t.after(() => rm(stateDir, { recursive: true, force: true }));
   assert.equal(await createFileSessionStore({ stateDir }).load("absent"), undefined);
+});
+
+
+test("ACPX keeps an active claim when another save fills its normal path", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "acpx-claim-conflict-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const setup = createFileSessionStore({ stateDir });
+  const file = join(stateDir, "sessions", "claim-conflict.json");
+  await setup.save(sessionRecord("ordinary", "claim-conflict", "2026-01-01T00:00:00.000Z", true));
+  const originalRename = fs.rename;
+  t.after(() => { fs.rename = originalRename; });
+  fs.rename = async (source, target) => {
+    if (source === file && String(target).endsWith(".pruning")) {
+      await setup.save(sessionRecord("ordinary", "claim-conflict", "2026-01-10T00:00:00.000Z", false));
+      await originalRename(source, target);
+      await setup.save(sessionRecord("ordinary", "claim-conflict", "2026-01-11T00:00:00.000Z", true));
+      return;
+    }
+    return originalRename(source, target);
+  };
+  const store = createFileSessionStore({ stateDir, retention: { enabled: true, maxAgeDays: 1 } });
+  assert.equal((await store.prune(Date.parse("2026-01-10T00:00:00.000Z"))).deleted, 0);
+  const claim = (await readdir(join(stateDir, "sessions"))).find((name) => name.endsWith(".pruning"));
+  assert.ok(claim);
+  assert.equal(JSON.parse(await readFile(join(stateDir, "sessions", claim), "utf8")).closed, false);
 });
