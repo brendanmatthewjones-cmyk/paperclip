@@ -209,6 +209,46 @@ test("ACPX load does not consume a claim owned by a live sweep", async (t) => {
   assert.equal((await setup.load("active-live-claim"))?.closed, false);
 });
 
+test("ACPX stale-lock recovery leaves a live sweep's claim untouched", async (t) => {
+  if (process.platform !== "linux") return t.skip("Linux process-start identity fixture");
+  const stateDir = await mkdtemp(join(tmpdir(), "acpx-overlap-recovery-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const setup = createFileSessionStore({ stateDir });
+  await setup.save(sessionRecord("ordinary", "live-sweep", "2026-01-10T00:00:00.000Z", false));
+  const file = join(stateDir, "sessions", "live-sweep.json");
+  const stat = await readFile(`/proc/${process.pid}/stat`, "utf8");
+  const bootId = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
+  const processStart = `${bootId}:${stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]}`;
+  const claim = `${file}.${process.pid}.${Buffer.from(processStart).toString("hex")}.00000000-0000-4000-8000-000000000000.pruning`;
+  await rename(file, claim);
+  await writeFile(join(stateDir, "sessions.prune.lock"), JSON.stringify({ pid: 2147483647, processStart: "dead", nonce: "old" }));
+  const store = createFileSessionStore({ stateDir, retention: { enabled: true, maxAgeDays: 1 } });
+  await store.prune(Date.parse("2026-01-10T00:00:00.000Z"));
+  assert.equal(JSON.parse(await readFile(claim, "utf8")).closed, false);
+  assert.equal((await setup.load("live-sweep"))?.closed, false);
+});
+
+test("ACPX claim recovery advances past preserved conflicts", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "acpx-claim-cursor-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const setup = createFileSessionStore({ stateDir });
+  const deadOwner = `2147483647.${Buffer.from("prior-process-start").toString("hex")}.00000000-0000-4000-8000-000000000000.pruning`;
+  for (const id of ["a", "b", "c", "z-active"]) {
+    await setup.save(sessionRecord("ordinary", id, "2026-01-10T00:00:00.000Z", false));
+    const file = join(stateDir, "sessions", `${id}.json`);
+    if (id === "z-active") await rename(file, `${file}.${deadOwner}`);
+    else await writeFile(`${file}.${deadOwner}`, await readFile(file));
+  }
+  const now = Date.parse("2026-01-10T00:00:00.000Z");
+  await writeFile(join(stateDir, "sessions.prune-state.json"), JSON.stringify({ lastPruneAt: now, pruneOffset: 0 }));
+  const store = createFileSessionStore({ stateDir, retention: { enabled: true, scanLimit: 2 } });
+  await store.prune(now + 1000);
+  assert.equal(await readFile(join(stateDir, "sessions", "z-active.json"), "utf8").then(() => true, () => false), false);
+  await store.prune(now + 2000);
+  assert.equal((await setup.load("z-active"))?.closed, false);
+  assert.ok((await readdir(join(stateDir, "sessions"))).some((name) => name.startsWith("a.json.") && name.endsWith(".pruning")));
+});
+
 test("ACPX missing session returns undefined before any save", async (t) => {
   const stateDir = await mkdtemp(join(tmpdir(), "acpx-empty-load-"));
   t.after(() => rm(stateDir, { recursive: true, force: true }));

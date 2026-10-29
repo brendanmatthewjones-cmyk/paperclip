@@ -280,7 +280,7 @@ index ccdbe5b032521518022223733049b8b38793473b..57e93d4abcb7aaddc3a020c8805d47c7
  //# sourceMappingURL=runtime.d.ts.map
 \ No newline at end of file
 diff --git a/dist/runtime.js b/dist/runtime.js
-index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..3fcc70b41d5664d93921d0b740d2b6da00158b29 100644
+index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..52678c180488df0e4a875c8559229e4c0a3c08bc 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -2,6 +2,8 @@ import { A as REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, At as listBuiltInAgents, D
@@ -414,7 +414,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..3fcc70b41d5664d93921d0b740d2b6da
  		}
  		let parsed;
  		try {
-@@ -1375,21 +1460,148 @@ var FileSessionStore = class {
+@@ -1375,21 +1460,169 @@ var FileSessionStore = class {
  		} catch {
  			return;
  		}
@@ -431,14 +431,23 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..3fcc70b41d5664d93921d0b740d2b6da
 +		return sanitized;
 +	}
 +	async recoverClaim(name, removeClaim = true) {
-+		const match = name.match(/^(.+\.json)\.\d+\.[0-9a-f-]+\.pruning$/);
++		const match = name.match(/^(.+\.json)\.(\d+)\.(?:([0-9a-f]+)\.)?([0-9a-f-]+)\.pruning$/);
 +		if (!match) return;
++		if (removeClaim) {
++			const currentStart = await processStartIdentity(Number(match[2]));
++			// Older claims carry only a PID: preserve them while that PID is live.
++			// A current-format claim also survives PID reuse via its start identity.
++			if (currentStart === void 0 || currentStart !== null && (!match[3] || currentStart === Buffer.from(match[3], "hex").toString())) return;
++		}
 +		const claim = path.join(this.sessionDir, name);
 +		const target = path.join(this.sessionDir, match[1]);
 +		// Never replace a newer normal record. Keep the claim if it conflicts.
 +		try { await fs.link(claim, target); }
 +		catch (error) { if (error.code === "ENOENT" || error.code === "EEXIST") return; throw error; }
-+		if (removeClaim) await fs.unlink(claim);
++		if (removeClaim) {
++			try { await fs.unlink(claim); }
++			catch (error) { if (error.code !== "ENOENT") throw error; }
++		}
 +	}
 +	async recoverClaimedSession(sessionId) {
 +		const prefix = `${safeSessionId(sessionId)}.json.`;
@@ -483,39 +492,51 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..3fcc70b41d5664d93921d0b740d2b6da
 +			// An abandoned lock and reclaim guard are never unlinked. A stale
 +			// reclaimer can race another reclaimer, but neither can remove a live
 +			// lock. Per-record rename and recheck keep concurrent sweeps safe.
-+			return this.pruneBatch(now);
++			return this.pruneBatch(now, processStart);
 +		}
 +		try {
 +			await lock.writeFile(ownerText);
-+			return await this.pruneBatch(now);
++			return await this.pruneBatch(now, processStart);
 +		} finally {
 +			await lock.close();
 +			await unlinkIfOwned(lockPath, ownerText);
 +		}
 +	}
-+	async pruneBatch(now) {
-+		const statePath = path.join(this.stateDir, "sessions.prune-state.json");
-+		let state = { lastPruneAt: 0, pruneOffset: 0 };
-+		try {
-+			const saved = JSON.parse(await fs.readFile(statePath, "utf8"));
-+			if (Number.isFinite(saved.lastPruneAt) && Number.isSafeInteger(saved.pruneOffset) && saved.pruneOffset >= 0) state = saved;
-+		} catch (error) { if (error.code !== "ENOENT") throw error; }
-+		const names = await fs.readdir(this.sessionDir);
-+		for (const name of names.filter((entry) => entry.endsWith(".pruning")).slice(0, this.retention.scanLimit)) {
-+			await this.recoverClaim(name);
-+		}
-+		if (now - state.lastPruneAt < this.retention.sweepIntervalMs) return { scanned: 0, deleted: 0 };
-+		const files = (await fs.readdir(this.sessionDir)).filter((file) => file.endsWith(".json") && file !== "index.json").sort();
-+		const count = Math.min(files.length, this.retention.scanLimit);
-+		const selected = Array.from({ length: count }, (_, index) => files[(state.pruneOffset + index) % files.length]);
-+		const nextState = { lastPruneAt: now, pruneOffset: files.length ? (state.pruneOffset + count) % files.length : 0 };
++	async writePruneState(statePath, state) {
 +		const tempState = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
 +		try {
-+			await fs.writeFile(tempState, JSON.stringify(nextState));
++			await fs.writeFile(tempState, JSON.stringify(state));
 +			await fs.rename(tempState, statePath);
 +		} finally {
 +			await fs.rm(tempState, { force: true });
 +		}
++	}
++	async pruneBatch(now, processStart) {
++		const statePath = path.join(this.stateDir, "sessions.prune-state.json");
++		let state = { lastPruneAt: 0, pruneOffset: 0, claimCursor: "" };
++		try {
++			const saved = JSON.parse(await fs.readFile(statePath, "utf8"));
++			if (Number.isFinite(saved.lastPruneAt) && Number.isSafeInteger(saved.pruneOffset) && saved.pruneOffset >= 0) {
++				state = { ...saved, claimCursor: typeof saved.claimCursor === "string" ? saved.claimCursor : "" };
++			}
++		} catch (error) { if (error.code !== "ENOENT") throw error; }
++		const claims = (await fs.readdir(this.sessionDir)).filter((entry) => entry.endsWith(".pruning")).sort();
++		if (claims.length > 0) {
++			const next = claims.findIndex((entry) => entry > state.claimCursor);
++			const start = next < 0 ? 0 : next;
++			const count = Math.min(claims.length, this.retention.scanLimit);
++			for (let i = 0; i < count; i++) await this.recoverClaim(claims[(start + i) % claims.length]);
++			state.claimCursor = claims[(start + count - 1) % claims.length];
++		}
++		if (now - state.lastPruneAt < this.retention.sweepIntervalMs) {
++			if (claims.length > 0) await this.writePruneState(statePath, state);
++			return { scanned: 0, deleted: 0 };
++		}
++		const files = (await fs.readdir(this.sessionDir)).filter((file) => file.endsWith(".json") && file !== "index.json").sort();
++		const count = Math.min(files.length, this.retention.scanLimit);
++		const selected = Array.from({ length: count }, (_, index) => files[(state.pruneOffset + index) % files.length]);
++		const nextState = { ...state, lastPruneAt: now, pruneOffset: files.length ? (state.pruneOffset + count) % files.length : 0 };
++		await this.writePruneState(statePath, nextState);
 +		if (files.length === 0) return { scanned: 0, deleted: 0 };
 +		const eligible = [];
 +		for (const name of selected) {
@@ -534,7 +555,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..3fcc70b41d5664d93921d0b740d2b6da
 +		for (const candidate of eligible) {
 +			if (deleted >= this.retention.deleteLimit) break;
 +			if (candidate.lastUsedAt > now - this.retention.maxAgeMs && excess <= 0) continue;
-+			const claim = `${candidate.file}.${process.pid}.${randomUUID()}.pruning`;
++			const claim = `${candidate.file}.${process.pid}.${Buffer.from(processStart).toString("hex")}.${randomUUID()}.pruning`;
 +			try { await fs.rename(candidate.file, claim); } catch (error) { if (error.code === "ENOENT") continue; throw error; }
 +			let keepClaim = false;
 +			try {
@@ -566,7 +587,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..3fcc70b41d5664d93921d0b740d2b6da
  }
  //#endregion
  //#region src/runtime/public/handle-state.ts
-@@ -1586,6 +1798,7 @@ var AcpxRuntime = class {
+@@ -1586,6 +1819,7 @@ var AcpxRuntime = class {
  		const turnPromise = this.getManager().then((manager) => manager.startTurn({
  			handle,
  			text: input.text,
@@ -574,7 +595,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..3fcc70b41d5664d93921d0b740d2b6da
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
-@@ -1614,6 +1827,7 @@ var AcpxRuntime = class {
+@@ -1614,6 +1848,7 @@ var AcpxRuntime = class {
  		yield* (await this.getManager()).runTurn({
  			handle,
  			text: input.text,
