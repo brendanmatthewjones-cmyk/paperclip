@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -138,4 +138,55 @@ test("ACPX retention shares the deadline and cursor across new stores for one di
     await next.prune(start + i * 60_000);
   }
   for (let i = 0; i < 5; i++) assert.equal(await setup.load(`stale-${i}`), undefined);
+});
+
+
+test("ACPX reclaims a stale lock when the PID has restarted", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "acpx-pid-reuse-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const setup = createFileSessionStore({ stateDir });
+  await setup.save(sessionRecord("ordinary", "stale", "2026-01-01T00:00:00.000Z", true));
+  await writeFile(join(stateDir, "sessions.prune.lock"), JSON.stringify({ pid: process.pid, processStart: "prior-process-start", nonce: "dead" }));
+  const store = createFileSessionStore({ stateDir, retention: { enabled: true, maxAgeDays: 1 } });
+  assert.equal((await store.prune(Date.parse("2026-01-10T00:00:00.000Z"))).deleted, 1);
+  assert.equal(await store.load("stale"), undefined);
+});
+
+test("ACPX recovers an interrupted reclaim guard", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "acpx-reclaim-restart-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const setup = createFileSessionStore({ stateDir });
+  await setup.save(sessionRecord("ordinary", "stale", "2026-01-01T00:00:00.000Z", true));
+  const dead = JSON.stringify({ pid: process.pid, processStart: "prior-process-start", nonce: "dead" });
+  await writeFile(join(stateDir, "sessions.prune.lock"), dead);
+  await writeFile(join(stateDir, "sessions.prune.lock.reclaim"), dead);
+  const store = createFileSessionStore({ stateDir, retention: { enabled: true, maxAgeDays: 1 } });
+  assert.equal((await store.prune(Date.parse("2026-01-10T00:00:00.000Z"))).deleted, 1);
+});
+
+test("ACPX restores an active record claimed before a crash", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "acpx-claim-restart-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const setup = createFileSessionStore({ stateDir });
+  await setup.save(sessionRecord("ordinary", "active-after-race", "2026-01-10T00:00:00.000Z", false));
+  const file = join(stateDir, "sessions", "active-after-race.json");
+  await rename(file, `${file}.${process.pid}.00000000-0000-4000-8000-000000000000.pruning`);
+  const restarted = createFileSessionStore({ stateDir, retention: { enabled: true, maxAgeDays: 1 } });
+  assert.equal((await restarted.load("active-after-race"))?.closed, false);
+  assert.equal((await setup.load("active-after-race"))?.closed, false);
+});
+
+
+test("ACPX restart sweep restores a claimed active record even before the next retention deadline", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "acpx-claim-deadline-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const setup = createFileSessionStore({ stateDir });
+  await setup.save(sessionRecord("ordinary", "active-claimed", "2026-01-10T00:00:00.000Z", false));
+  const file = join(stateDir, "sessions", "active-claimed.json");
+  await rename(file, `${file}.${process.pid}.00000000-0000-4000-8000-000000000000.pruning`);
+  const now = Date.parse("2026-01-10T00:00:00.000Z");
+  await writeFile(join(stateDir, "sessions.prune-state.json"), JSON.stringify({ lastPruneAt: now, pruneOffset: 0 }));
+  const restarted = createFileSessionStore({ stateDir, retention: { enabled: true, maxAgeDays: 1 } });
+  assert.deepEqual(await restarted.prune(now + 1000), { scanned: 0, deleted: 0 });
+  assert.equal((await restarted.load("active-claimed"))?.closed, false);
 });
