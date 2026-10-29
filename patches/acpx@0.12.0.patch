@@ -280,7 +280,7 @@ index ccdbe5b032521518022223733049b8b38793473b..57e93d4abcb7aaddc3a020c8805d47c7
  //# sourceMappingURL=runtime.d.ts.map
 \ No newline at end of file
 diff --git a/dist/runtime.js b/dist/runtime.js
-index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..4a8e1f02d4fe46d96a01ce6e5f5f401685978bb5 100644
+index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..30736e9cf25b40eb42496c44fda40a42b3dbc500 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -2,6 +2,8 @@ import { A as REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, At as listBuiltInAgents, D
@@ -310,7 +310,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..4a8e1f02d4fe46d96a01ce6e5f5f4016
  				timeoutMs: task.input.timeoutMs ?? this.options.timeoutMs,
  				conversation: turn.conversation,
  				promptMessageId: turn.promptMessageId
-@@ -1346,10 +1350,68 @@ var AcpRuntimeManager = class {
+@@ -1346,10 +1350,88 @@ var AcpRuntimeManager = class {
  function safeSessionId(sessionId) {
  	return encodeURIComponent(sessionId);
  }
@@ -318,25 +318,40 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..4a8e1f02d4fe46d96a01ce6e5f5f4016
 +	return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, Math.floor(value))) : fallback;
 +}
 +const execFileForIdentity = promisify(execFile);
++let selfStartIdentity;
 +async function processStartIdentity(pid) {
 +	if (!Number.isInteger(pid) || pid <= 0) return null;
++	if (pid === process.pid && selfStartIdentity) return selfStartIdentity;
++	let identity;
 +	if (process.platform === "linux") {
 +		try {
-+			const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
-+			return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] ?? null;
++			const [stat, bootId] = await Promise.all([
++				fs.readFile(`/proc/${pid}/stat`, "utf8"),
++				fs.readFile("/proc/sys/kernel/random/boot_id", "utf8")
++			]);
++			identity = `${bootId.trim()}:${stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]}`;
 +		} catch (error) {
 +			if (error.code === "ENOENT" || error.code === "ESRCH") return null;
 +			throw error;
 +		}
++	} else {
++		const command = process.platform === "win32" ? "powershell.exe" : "ps";
++		const args = process.platform === "win32"
++			? ["-NoProfile", "-NonInteractive", "-Command", `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').CreationDate.ToString('o')`]
++			: ["-p", String(pid), "-o", "lstart="];
++		try {
++			const { stdout } = await execFileForIdentity(command, args, { encoding: "utf8" });
++			identity = stdout.trim() || null;
++		} catch (error) {
++			if (error.code === 1) return null;
++			// Restricted hosts may disallow process inspection. The current
++			// process still has a unique start epoch; other owners fail closed.
++			if (pid !== process.pid) return void 0;
++			identity = `self:${performance.timeOrigin}`;
++		}
 +	}
-+	try {
-+		const { stdout } = await execFileForIdentity("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8" });
-+		return stdout.trim() || null;
-+	} catch (error) {
-+		if (error.code === 1) return null;
-+		if (error.code === "EPERM" && pid === process.pid) return `self:${performance.timeOrigin}`;
-+		throw error;
-+	}
++	if (pid === process.pid) selfStartIdentity = identity;
++	return identity;
 +}
 +async function staleOwner(pathname) {
 +	let text;
@@ -346,7 +361,11 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..4a8e1f02d4fe46d96a01ce6e5f5f4016
 +	try { owner = JSON.parse(text); } catch {}
 +	if (Number.isInteger(owner?.pid) && typeof owner.processStart === "string") {
 +		const currentStart = await processStartIdentity(owner.pid);
-+		return currentStart === null || currentStart !== owner.processStart;
++		if (currentStart === null) return true;
++		if (currentStart !== void 0) return currentStart !== owner.processStart;
++		// Process inspection is unavailable. Reclaim only when the PID is gone.
++		try { process.kill(owner.pid, 0); return false; }
++		catch (error) { if (error.code === "ESRCH") return true; if (error.code === "EPERM") return false; throw error; }
 +	}
 +	if (Number.isInteger(owner?.pid) && owner.pid > 0) {
 +		try { process.kill(owner.pid, 0); }
@@ -361,6 +380,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..4a8e1f02d4fe46d96a01ce6e5f5f4016
 +		if (await fs.readFile(pathname, "utf8") === ownerText) await fs.unlink(pathname);
 +	} catch (error) { if (error.code !== "ENOENT") throw error; }
 +}
++const activePrunes = /* @__PURE__ */ new Set();
  var FileSessionStore = class {
  	stateDir;
 -	constructor(stateDir) {
@@ -380,7 +400,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..4a8e1f02d4fe46d96a01ce6e5f5f4016
  	}
  	get sessionDir() {
  		return path.join(this.stateDir, "sessions");
-@@ -1366,8 +1428,11 @@ var FileSessionStore = class {
+@@ -1366,8 +1448,11 @@ var FileSessionStore = class {
  		try {
  			payload = await fs.readFile(this.filePath(sessionId), "utf8");
  		} catch (error) {
@@ -394,7 +414,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..4a8e1f02d4fe46d96a01ce6e5f5f4016
  		}
  		let parsed;
  		try {
-@@ -1375,21 +1440,151 @@ var FileSessionStore = class {
+@@ -1375,21 +1460,141 @@ var FileSessionStore = class {
  		} catch {
  			return;
  		}
@@ -410,7 +430,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..4a8e1f02d4fe46d96a01ce6e5f5f4016
 +		}
 +		return sanitized;
 +	}
-+	async recoverClaim(name) {
++	async recoverClaim(name, removeClaim = true) {
 +		const match = name.match(/^(.+\.json)\.\d+\.[0-9a-f-]+\.pruning$/);
 +		if (!match) return;
 +		const claim = path.join(this.sessionDir, name);
@@ -418,12 +438,17 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..4a8e1f02d4fe46d96a01ce6e5f5f4016
 +		// Never replace a newer normal record. Keep the claim if it conflicts.
 +		try { await fs.link(claim, target); }
 +		catch (error) { if (error.code === "ENOENT" || error.code === "EEXIST") return; throw error; }
-+		await fs.unlink(claim);
++		if (removeClaim) await fs.unlink(claim);
 +	}
 +	async recoverClaimedSession(sessionId) {
 +		const prefix = `${safeSessionId(sessionId)}.json.`;
-+		for (const name of await fs.readdir(this.sessionDir)) {
-+			if (name.startsWith(prefix) && name.endsWith(".pruning")) await this.recoverClaim(name);
++		let names;
++		try { names = await fs.readdir(this.sessionDir); }
++		catch (error) { if (error.code === "ENOENT") return; throw error; }
++		for (const name of names) {
++			// Loads link claims back into view but leave them for the sweep. A
++			// live sweep may still be reading its claim.
++			if (name.startsWith(prefix) && name.endsWith(".pruning")) await this.recoverClaim(name, false);
 +		}
  	}
  	async save(record) {
@@ -439,7 +464,12 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..4a8e1f02d4fe46d96a01ce6e5f5f4016
 +		if (this.retention.enabled) await this.prune();
 +	}
 +	async prune(now = Date.now()) {
-+		if (!this.retention.enabled) return { scanned: 0, deleted: 0 };
++		if (!this.retention.enabled || activePrunes.has(this.stateDir)) return { scanned: 0, deleted: 0 };
++		activePrunes.add(this.stateDir);
++		try { return await this.pruneOnce(now); }
++		finally { activePrunes.delete(this.stateDir); }
++	}
++	async pruneOnce(now) {
 +		await this.ensureDir();
 +		const lockPath = path.join(this.stateDir, "sessions.prune.lock");
 +		const processStart = await processStartIdentity(process.pid);
@@ -450,30 +480,10 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..4a8e1f02d4fe46d96a01ce6e5f5f4016
 +		catch (error) {
 +			if (error.code !== "EEXIST") throw error;
 +			if (!await staleOwner(lockPath)) return { scanned: 0, deleted: 0 };
-+			const recoveryPath = `${lockPath}.reclaim`;
-+			let guard;
-+			try { guard = await fs.open(recoveryPath, "wx"); }
-+			catch (guardError) {
-+				if (guardError.code !== "EEXIST") throw guardError;
-+				if (!await staleOwner(recoveryPath)) return { scanned: 0, deleted: 0 };
-+				// A crashed reclaimer cannot hold this guard forever. The next
-+				// contender can replace it, then recheck the sweep lock below.
-+				await fs.unlink(recoveryPath);
-+				try { guard = await fs.open(recoveryPath, "wx"); }
-+				catch (retryError) { if (retryError.code === "EEXIST") return { scanned: 0, deleted: 0 }; throw retryError; }
-+			}
-+			try {
-+				await guard.writeFile(ownerText);
-+				if (await staleOwner(lockPath)) {
-+					// The stale decision is repeated while holding the recovery guard.
-+					try { await fs.unlink(lockPath); } catch (unlinkError) { if (unlinkError.code !== "ENOENT") throw unlinkError; }
-+				}
-+			} finally {
-+				await guard.close();
-+				await unlinkIfOwned(recoveryPath, ownerText);
-+			}
-+			try { lock = await fs.open(lockPath, "wx"); }
-+			catch (retryError) { if (retryError.code === "EEXIST") return { scanned: 0, deleted: 0 }; throw retryError; }
++			// An abandoned lock and reclaim guard are never unlinked. A stale
++			// reclaimer can race another reclaimer, but neither can remove a live
++			// lock. Per-record rename and recheck keep concurrent sweeps safe.
++			return this.pruneBatch(now);
 +		}
 +		try {
 +			await lock.writeFile(ownerText);
@@ -549,7 +559,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..4a8e1f02d4fe46d96a01ce6e5f5f4016
  }
  //#endregion
  //#region src/runtime/public/handle-state.ts
-@@ -1586,6 +1781,7 @@ var AcpxRuntime = class {
+@@ -1586,6 +1791,7 @@ var AcpxRuntime = class {
  		const turnPromise = this.getManager().then((manager) => manager.startTurn({
  			handle,
  			text: input.text,
@@ -557,7 +567,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..4a8e1f02d4fe46d96a01ce6e5f5f4016
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
-@@ -1614,6 +1810,7 @@ var AcpxRuntime = class {
+@@ -1614,6 +1820,7 @@ var AcpxRuntime = class {
  		yield* (await this.getManager()).runTurn({
  			handle,
  			text: input.text,

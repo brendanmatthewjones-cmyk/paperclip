@@ -190,3 +190,27 @@ test("ACPX restart sweep restores a claimed active record even before the next r
   assert.deepEqual(await restarted.prune(now + 1000), { scanned: 0, deleted: 0 });
   assert.equal((await restarted.load("active-claimed"))?.closed, false);
 });
+
+
+test("ACPX load does not consume a claim owned by a live sweep", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "acpx-live-claim-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const setup = createFileSessionStore({ stateDir });
+  await setup.save(sessionRecord("ordinary", "active-live-claim", "2026-01-10T00:00:00.000Z", false));
+  const file = join(stateDir, "sessions", "active-live-claim.json");
+  const claim = `${file}.${process.pid}.00000000-0000-4000-8000-000000000000.pruning`;
+  await rename(file, claim);
+  await writeFile(join(stateDir, "sessions.prune.lock"), JSON.stringify({ pid: process.pid, nonce: "live" }));
+  assert.equal((await setup.load("active-live-claim"))?.closed, false);
+  assert.ok((await readFile(claim, "utf8")).includes('"closed": false'));
+  await rm(join(stateDir, "sessions.prune.lock"));
+  const restarted = createFileSessionStore({ stateDir, retention: { enabled: true, maxAgeDays: 1 } });
+  await restarted.prune(Date.parse("2026-01-10T00:00:00.000Z"));
+  assert.equal((await setup.load("active-live-claim"))?.closed, false);
+});
+
+test("ACPX missing session returns undefined before any save", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "acpx-empty-load-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  assert.equal(await createFileSessionStore({ stateDir }).load("absent"), undefined);
+});
