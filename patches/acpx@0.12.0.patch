@@ -280,7 +280,7 @@ index ccdbe5b032521518022223733049b8b38793473b..57e93d4abcb7aaddc3a020c8805d47c7
  //# sourceMappingURL=runtime.d.ts.map
 \ No newline at end of file
 diff --git a/dist/runtime.js b/dist/runtime.js
-index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..52678c180488df0e4a875c8559229e4c0a3c08bc 100644
+index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..58f092daf51161403c539bbf47de0f140624a3e5 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -2,6 +2,8 @@ import { A as REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, At as listBuiltInAgents, D
@@ -414,7 +414,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..52678c180488df0e4a875c8559229e4c
  		}
  		let parsed;
  		try {
-@@ -1375,21 +1460,169 @@ var FileSessionStore = class {
+@@ -1375,21 +1460,178 @@ var FileSessionStore = class {
  		} catch {
  			return;
  		}
@@ -513,23 +513,32 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..52678c180488df0e4a875c8559229e4c
 +	}
 +	async pruneBatch(now, processStart) {
 +		const statePath = path.join(this.stateDir, "sessions.prune-state.json");
-+		let state = { lastPruneAt: 0, pruneOffset: 0, claimCursor: "" };
++		const claimStatePath = path.join(this.stateDir, "sessions.prune-claim-state.json");
++		let state = { lastPruneAt: 0, pruneOffset: 0 };
++		let claimCursor = "";
 +		try {
 +			const saved = JSON.parse(await fs.readFile(statePath, "utf8"));
 +			if (Number.isFinite(saved.lastPruneAt) && Number.isSafeInteger(saved.pruneOffset) && saved.pruneOffset >= 0) {
-+				state = { ...saved, claimCursor: typeof saved.claimCursor === "string" ? saved.claimCursor : "" };
++				state = { lastPruneAt: saved.lastPruneAt, pruneOffset: saved.pruneOffset };
++				if (typeof saved.claimCursor === "string") claimCursor = saved.claimCursor;
 +			}
++		} catch (error) { if (error.code !== "ENOENT") throw error; }
++		try {
++			const saved = JSON.parse(await fs.readFile(claimStatePath, "utf8"));
++			if (typeof saved.claimCursor === "string") claimCursor = saved.claimCursor;
 +		} catch (error) { if (error.code !== "ENOENT") throw error; }
 +		const claims = (await fs.readdir(this.sessionDir)).filter((entry) => entry.endsWith(".pruning")).sort();
 +		if (claims.length > 0) {
-+			const next = claims.findIndex((entry) => entry > state.claimCursor);
++			const next = claims.findIndex((entry) => entry > claimCursor);
 +			const start = next < 0 ? 0 : next;
 +			const count = Math.min(claims.length, this.retention.scanLimit);
 +			for (let i = 0; i < count; i++) await this.recoverClaim(claims[(start + i) % claims.length]);
-+			state.claimCursor = claims[(start + count - 1) % claims.length];
++			claimCursor = claims[(start + count - 1) % claims.length];
++			// Recovery can overlap a sweep after a crash. Keep its cursor write
++			// separate so a delayed recovery cannot replace a newer sweep deadline.
++			await this.writePruneState(claimStatePath, { claimCursor });
 +		}
 +		if (now - state.lastPruneAt < this.retention.sweepIntervalMs) {
-+			if (claims.length > 0) await this.writePruneState(statePath, state);
 +			return { scanned: 0, deleted: 0 };
 +		}
 +		const files = (await fs.readdir(this.sessionDir)).filter((file) => file.endsWith(".json") && file !== "index.json").sort();
@@ -587,7 +596,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..52678c180488df0e4a875c8559229e4c
  }
  //#endregion
  //#region src/runtime/public/handle-state.ts
-@@ -1586,6 +1819,7 @@ var AcpxRuntime = class {
+@@ -1586,6 +1828,7 @@ var AcpxRuntime = class {
  		const turnPromise = this.getManager().then((manager) => manager.startTurn({
  			handle,
  			text: input.text,
@@ -595,7 +604,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..52678c180488df0e4a875c8559229e4c
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
-@@ -1614,6 +1848,7 @@ var AcpxRuntime = class {
+@@ -1614,6 +1857,7 @@ var AcpxRuntime = class {
  		yield* (await this.getManager()).runTurn({
  			handle,
  			text: input.text,

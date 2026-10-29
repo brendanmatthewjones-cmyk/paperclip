@@ -245,8 +245,38 @@ test("ACPX claim recovery advances past preserved conflicts", async (t) => {
   await store.prune(now + 1000);
   assert.equal(await readFile(join(stateDir, "sessions", "z-active.json"), "utf8").then(() => true, () => false), false);
   await store.prune(now + 2000);
+  assert.equal(JSON.parse(await readFile(join(stateDir, "sessions", "z-active.json"), "utf8")).closed, false);
   assert.equal((await setup.load("z-active"))?.closed, false);
   assert.ok((await readdir(join(stateDir, "sessions"))).some((name) => name.startsWith("a.json.") && name.endsWith(".pruning")));
+});
+
+test("ACPX recovery cursor write preserves a newer sweep deadline", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "acpx-claim-state-race-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const setup = createFileSessionStore({ stateDir });
+  await setup.save(sessionRecord("ordinary", "conflict", "2026-01-10T00:00:00.000Z", false));
+  const file = join(stateDir, "sessions", "conflict.json");
+  await writeFile(`${file}.2147483647.${Buffer.from("dead").toString("hex")}.00000000-0000-4000-8000-000000000000.pruning`, await readFile(file));
+  const statePath = join(stateDir, "sessions.prune-state.json");
+  const claimStatePath = join(stateDir, "sessions.prune-claim-state.json");
+  const now = Date.parse("2026-01-10T00:00:00.000Z");
+  await writeFile(statePath, JSON.stringify({ lastPruneAt: now, pruneOffset: 0 }));
+  const newerState = { lastPruneAt: now + 60000, pruneOffset: 7 };
+  const originalRename = fs.rename;
+  t.after(() => { fs.rename = originalRename; });
+  let injected = false;
+  fs.rename = async (source, target) => {
+    if (!injected && (target === statePath || target === claimStatePath)) {
+      injected = true;
+      await writeFile(statePath, JSON.stringify(newerState));
+    }
+    return originalRename(source, target);
+  };
+  const store = createFileSessionStore({ stateDir, retention: { enabled: true, scanLimit: 1 } });
+  await store.prune(now + 1000);
+  assert.equal(injected, true);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), newerState);
+  assert.equal(typeof JSON.parse(await readFile(claimStatePath, "utf8")).claimCursor, "string");
 });
 
 test("ACPX missing session returns undefined before any save", async (t) => {
