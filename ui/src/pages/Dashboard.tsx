@@ -38,6 +38,7 @@ import { InlineBanner } from "../components/InlineBanner";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
+import { WeeklyUsageGauges } from "../components/WeeklyUsageGauges";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
 
@@ -450,6 +451,8 @@ export function Dashboard() {
               }
             />
           </div>
+
+          <WeeklyUsageGauges companyId={selectedCompanyId!} />
 
           <SmokeLabDashboardCard companyId={selectedCompanyId!} />
 

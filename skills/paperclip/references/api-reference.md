@@ -1510,6 +1510,35 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/companies/:companyId/costs/by-project` | Costs by project                   |
 | GET    | `/api/companies/:companyId/activity`         | Activity log                       |
 | GET    | `/api/companies/:companyId/dashboard`        | Company health summary             |
+| GET    | `/api/companies/:companyId/ai-usage/weekly`  | Weekly AI usage gauge per provider (see below) |
+
+### Weekly AI usage
+
+`GET /api/companies/:companyId/ai-usage/weekly` returns one entry per provider
+(`anthropic`, `openai`, `xai`) with the share of the subscription allowance
+already used. Read it before starting large or long-running work.
+
+```json
+{
+  "observedAt": "2026-11-08T12:00:00.000Z",
+  "stale": false,
+  "thresholds": { "warning": 70, "critical": 90 },
+  "providers": [
+    { "provider": "anthropic", "usedPercent": 46, "remainingPercent": 54,
+      "resetsAt": "2026-11-11T16:00:00.000Z", "windowKind": "weekly", "level": "ok",
+      "accountCount": 1, "summary": "46% of the weekly limit used, resets 2026-11-11T16:00:00.000Z." }
+  ]
+}
+```
+
+- `level` is the field to act on: `ok`, `warning` (prefer lighter work on that
+  provider), `critical` (avoid new work on it until `resetsAt`), or `unknown`
+  (not connected or unreadable; do not treat it as a reason to stop).
+- `windowKind: "billing_period"` means the provider (xAI) reports a plan period
+  rather than a rolling week.
+- Agent responses carry provider totals only, never account names. Values come
+  from the most recent board read and refresh automatically when older than
+  five minutes; `stale: true` means no fresh reading is available.
 
 ### Secrets
 

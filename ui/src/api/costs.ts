@@ -13,6 +13,7 @@ import type {
   FinanceByKind,
   FinanceEvent,
   ProviderQuotaResult,
+  WeeklyUsageReport,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -54,6 +55,8 @@ export const costsApi = {
     api.get<FinanceEvent[]>(`/companies/${companyId}/costs/finance-events${dateParamsWithLimit(from, to, limit)}`),
   windowSpend: (companyId: string) =>
     api.get<CostWindowSpendRow[]>(`/companies/${companyId}/costs/window-spend`),
+  weeklyUsage: (companyId: string) =>
+    api.get<WeeklyUsageReport>(`/companies/${companyId}/ai-usage/weekly`),
   quotaWindows: (companyId: string) =>
     api.get<ProviderQuotaResult[]>(`/companies/${companyId}/costs/quota-windows`),
 };

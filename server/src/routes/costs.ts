@@ -33,6 +33,7 @@ import {
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
+import { weeklyUsageService } from "../services/weekly-usage.js";
 import { badRequest, forbidden } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -81,6 +82,7 @@ export function costRoutes(
   const finance = financeService(db);
   const budgets = budgetService(db, budgetHooks);
   const companies = companyService(db);
+  const weeklyUsage = weeklyUsageService(db);
   const agents = agentService(db);
   const issues = issueService(db);
   const access = accessService(db);
@@ -341,6 +343,25 @@ export function costRoutes(
     }
     const results = await fetchCompanyQuotaWindows(db, companyId, getActorInfo(req).actorId);
     res.json(results);
+  });
+
+  // One gauge per provider (Anthropic, OpenAI, xAI). Board users get a fresh
+  // read with per-account rows; agents get provider-level gauges only.
+  router.get("/companies/:companyId/ai-usage/weekly", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.setHeader("Cache-Control", "no-store");
+    if (req.actor.type === "agent") {
+      res.json(await weeklyUsage.forAgent(companyId));
+      return;
+    }
+    assertBoard(req);
+    const company = await companies.getById(companyId);
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    res.json(await weeklyUsage.forBoard(companyId, getActorInfo(req).actorId));
   });
 
   router.get("/companies/:companyId/budgets/overview", async (req, res) => {

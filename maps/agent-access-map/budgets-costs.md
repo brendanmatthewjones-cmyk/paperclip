@@ -17,6 +17,7 @@ API: `present` — representative operation IDs:
 
 - `GET /api/companies/{companyId}/costs/summary`.
 - `GET /api/companies/{companyId}/costs/by-agent`.
+- `GET /api/companies/{companyId}/ai-usage/weekly`.
 
 Agent access: `available` — REST / native call_api / CLI cost.
 
@@ -33,6 +34,9 @@ remaining operations before qualifying the whole capability.
 
 Gaps: Cost visibility applies. Provider accounting imports and quota-window inspection
 have additional board gates.
+Weekly AI usage is agent-readable as provider-level gauges only (no account names);
+agent reads refresh with the last board viewer's grants and are empty until a board
+user has opened the dashboard since the server started.
 
 ## `budgets`
 

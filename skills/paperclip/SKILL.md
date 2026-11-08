@@ -519,6 +519,10 @@ Load `references/workflows.md` when the task matches one of these:
 - CEO-safe company imports/exports (preview/apply).
 - App-level self-test playbook.
 
+Before large or long-running work, check `GET /api/companies/:companyId/ai-usage/weekly`.
+It returns a `level` (`ok`/`warning`/`critical`/`unknown`) per provider; see
+"Weekly AI usage" in `references/api-reference.md`.
+
 ## Cases
 
 Load `references/cases.md` when creating, upserting, documenting, attaching to,
