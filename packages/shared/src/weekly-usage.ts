@@ -199,9 +199,11 @@ export function summarizeWeeklyUsage(input: {
       accountCount: accounts.length,
       checkedAt: checked.at(-1) ?? null,
     };
+    // A note (e.g. "showing the last reading") travels with the gauge it qualifies.
+    const note = worst?.usedPercent != null && worst.message ? ` ${worst.message}` : "";
     return {
       ...gauge,
-      summary: describe(gauge),
+      summary: describe(gauge) + note,
       ...(input.includeAccounts ? { accounts } : {}),
     };
   });

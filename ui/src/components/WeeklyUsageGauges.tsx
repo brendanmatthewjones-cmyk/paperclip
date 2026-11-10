@@ -79,6 +79,8 @@ function ProviderGauge({ provider }: { provider: WeeklyUsageProvider }) {
   const connected = provider.accountCount > 0;
   const resets = formatResetsIn(provider.resetsAt);
   const windowName = provider.windowKind === "billing_period" ? "this billing period" : "this week";
+  // The account behind the gauge explains a missing or older-than-usual reading.
+  const note = provider.accounts?.find((account) => account.message);
   return (
     <div className="flex flex-col items-center text-center gap-1" data-testid={`weekly-usage-${provider.provider}`}>
       <div className="relative w-full flex justify-center">
@@ -100,8 +102,11 @@ function ProviderGauge({ provider }: { provider: WeeklyUsageProvider }) {
             {LEVEL_TEXT[provider.level]}
             {resets ? ` · resets ${resets}` : ""}
           </p>
-          {provider.usedPercent == null && provider.accounts?.[0]?.message && (
-            <p className="text-(length:--text-nano) text-muted-foreground/70">{provider.accounts[0].message}</p>
+          {note && (
+            <p className="text-(length:--text-nano) text-muted-foreground/70">
+              {note.message}
+              {provider.usedPercent != null && note.checkedAt ? ` Read ${timeAgo(note.checkedAt)}.` : ""}
+            </p>
           )}
           {provider.accountCount > 1 && (
             <p className="text-(length:--text-nano) text-muted-foreground/70">
